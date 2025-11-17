@@ -8,8 +8,3 @@ Automated quiz-solving system using LLMs for data analysis tasks.
 - LLM-powered question understanding
 - Automated answer submission
 - Chart generation capabilities
-
-## Setup
-pip install -r requirements.txt
-playwright install chromium
-cp .env.example .env
