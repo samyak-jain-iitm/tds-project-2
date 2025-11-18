@@ -220,9 +220,9 @@ class QuizSolver:
     
     def _extract_submit_url(self, html: str, base_url: str) -> str:
         
-        logger.debug(f"Extracting submit URL from base URL: {base_url}")
-        logger.debug(f"HTML snippet (first 500 chars): {html[:500]}")
-        
+        logger.info(f"Extracting submit URL from base URL: {base_url}")
+        logger.info(f"HTML snippet (first 500 chars): {html[:500]}")
+
         soup = BeautifulSoup(html, "html.parser")
         
         all_text = soup.get_text(separator=' ')
