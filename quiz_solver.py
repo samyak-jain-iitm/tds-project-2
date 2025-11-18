@@ -6,7 +6,6 @@ import os
 import time
 import re
 import logging
-from playwright.async_api import async_playwright
 from openai import OpenAI
 import pdfplumber
 import pandas as pd
@@ -159,57 +158,60 @@ class QuizSolver:
         logger.info("="*80)
     
     async def fetch_quiz_page(self, url: str) -> dict:
-        """Fetch and parse quiz page using headless browser"""
+        """Fetch and parse quiz page using requests (no browser needed)"""
         try:
-            logger.debug(f"🌐 Launching headless browser for {url}")
+            logger.info(f"🌐 Fetching page with requests: {url}")
             
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page()
-                
-                logger.debug("⏳ Navigating to page...")
-                await page.goto(url, wait_until='networkidle', timeout=30000)
-                await page.wait_for_timeout(2000)
-                
-                logger.debug("📄 Extracting page content...")
-                content = await page.content()
-                
-                result_element = await page.query_selector("#result")
-                if result_element:
-                    question_html = await result_element.inner_html()
-                    logger.debug("✅ Found #result element")
-                else:
-                    question_html = content
-                    logger.debug("⚠️  No #result element, using full page")
-                
-                await browser.close()
-                logger.debug("✅ Browser closed")
-                
-                # Parse HTML
-                soup = BeautifulSoup(question_html, 'html.parser')
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            
+            logger.info(f"✅ Page fetched: {response.status_code}")
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            result_div = soup.find(id='result')
+            if result_div:
+                question_html = str(result_div)
+                question_text = result_div.get_text(separator=' ', strip=True)
+                logger.info("✅ Found #result element")
+            else:
+                question_html = response.text
                 question_text = soup.get_text(separator=' ', strip=True)
-                
-                # Extract URLs
-                submit_url = self._extract_submit_url(question_text, content)
-                file_urls = self._extract_file_urls(soup, url)
-                
-                if submit_url:
-                    logger.info(f"✅ Submit URL found: {submit_url}")
-                else:
-                    logger.warning("⚠️  No submit URL found")
-                
-                if file_urls:
-                    logger.info(f"📎 Found {len(file_urls)} file(s) to download:")
-                    for furl in file_urls:
-                        logger.info(f"   • {furl}")
-                
-                return {
-                    'question': question_text,
-                    'submit_url': submit_url,
-                    'file_urls': file_urls,
-                    'html': question_html
-                }
-                
+                logger.info("⚠️  No #result element, using full page")
+            
+            scripts = soup.find_all('script')
+            for script in scripts:
+                if script.string and 'atob' in script.string:
+                    logger.info("🔓 Found base64 encoded content, decoding...")
+                    import base64
+                    match = re.search(r'atob\(`([^`]+)`\)', script.string)
+                    if match:
+                        encoded = match.group(1)
+                        decoded = base64.b64decode(encoded).decode('utf-8')
+                        logger.info(f"✅ Decoded content: {decoded[:200]}...")
+                        question_text = decoded
+                        question_html = decoded
+            
+            submit_url = self._extract_submit_url(question_text, response.text)
+            file_urls = self._extract_file_urls(soup, url)
+            
+            if submit_url:
+                logger.info(f"✅ Submit URL found: {submit_url}")
+            else:
+                logger.warning("⚠️  No submit URL found")
+            
+            if file_urls:
+                logger.info(f"📎 Found {len(file_urls)} file(s) to download:")
+                for furl in file_urls:
+                    logger.info(f"   • {furl}")
+            
+            return {
+                'question': question_text,
+                'submit_url': submit_url,
+                'file_urls': file_urls,
+                'html': question_html
+            }
+            
         except Exception as e:
             logger.error(f"❌ Error fetching page: {e}")
             logger.exception("Full traceback:")
