@@ -248,13 +248,13 @@ class QuizSolver:
                 submit_url = m.group(1).strip()
                 if submit_url.startswith("/"):
                     if not (base_url.startswith("http://") or base_url.startswith("https://")):
-                        self.logger.warning(f"Base URL not absolute: {base_url}")
+                        logger.warning(f"Base URL not absolute: {base_url}")
                         return None
                     full_url = urljoin(base_url, submit_url)
-                    self.logger.info(f"✅ Found relative submit URL '{submit_url}', joined to base: {full_url}")
+                    logger.info(f"✅ Found relative submit URL '{submit_url}', joined to base: {full_url}")
                     return full_url
                 else:
-                    self.logger.info(f"✅ Found absolute submit URL: {submit_url}")
+                    logger.info(f"✅ Found absolute submit URL: {submit_url}")
                     return submit_url
 
         for tag in soup.find_all('a', href=True):
@@ -264,10 +264,10 @@ class QuizSolver:
                     full_url = urljoin(base_url, href)
                 else:
                     full_url = href
-                self.logger.info(f"✅ Found submit URL in anchor: {full_url}")
+                logger.info(f"✅ Found submit URL in anchor: {full_url}")
                 return full_url
 
-        self.logger.warning("⚠️ Could not extract submit URL from HTML/text")
+        logger.warning("⚠️ Could not extract submit URL from HTML/text")
         return None
 
     
