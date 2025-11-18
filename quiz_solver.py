@@ -12,7 +12,7 @@ import pandas as pd
 from io import BytesIO
 from PIL import Image
 import matplotlib
-matplotlib.use('Agg')  # Important: Use non-GUI backend for server
+matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
 from bs4 import BeautifulSoup
 
@@ -21,12 +21,11 @@ class QuizSolver:
         self.email = email
         self.secret = secret
         
-        # Initialize OpenAI client
-        openai_key = os.getenv("OPENAI_API_KEY")
+        openai_key = os.getenv("AI_PIPE_TOKEN")
         if not openai_key:
             raise ValueError("OPENAI_API_KEY not set in environment")
         
-        self.client = OpenAI(api_key=openai_key)
+        self.client = OpenAI(api_key=openai_key, base_url="https://aipipe.org/openai/v1")
         self.start_time = None
         
     async def solve_quiz_chain(self, initial_url: str):
@@ -40,7 +39,6 @@ class QuizSolver:
         print(f"Starting quiz chain from: {initial_url}")
         
         for i in range(max_iterations):
-            # Check time limit (3 minutes = 180 seconds, use 170 for safety)
             elapsed = time.time() - self.start_time
             if elapsed > 170:
                 print(f"Time limit approaching ({elapsed:.1f}s), stopping")
@@ -51,7 +49,6 @@ class QuizSolver:
             print(f"Elapsed time: {elapsed:.1f}s")
             
             try:
-                # Fetch quiz page
                 question_data = await self.fetch_quiz_page(current_url)
                 if not question_data:
                     print("Failed to fetch quiz page")
@@ -59,11 +56,9 @@ class QuizSolver:
                 
                 print(f"Question: {question_data['question'][:100]}...")
                 
-                # Solve the question
                 answer = await self.solve_question(question_data)
                 print(f"Answer generated: {str(answer)[:100]}")
                 
-                # Submit answer
                 result = await self.submit_answer(
                     question_data['submit_url'],
                     current_url,
@@ -86,7 +81,6 @@ class QuizSolver:
                 else:
                     print(f"❌ Answer incorrect: {result.get('reason', 'No reason given')}")
                     if result.get('url'):
-                        # Can retry or skip to next
                         current_url = result['url']
                         print(f"Moving to next: {current_url}")
                     else:
@@ -111,10 +105,8 @@ class QuizSolver:
                 await page.goto(url, wait_until='networkidle', timeout=30000)
                 await page.wait_for_timeout(2000)
                 
-                # Get rendered content
                 content = await page.content()
                 
-                # Try to get result div
                 result_element = await page.query_selector("#result")
                 if result_element:
                     question_html = await result_element.inner_html()
@@ -123,14 +115,11 @@ class QuizSolver:
                 
                 await browser.close()
                 
-                # Parse with BeautifulSoup
                 soup = BeautifulSoup(question_html, 'html.parser')
                 question_text = soup.get_text(separator=' ', strip=True)
                 
-                # Extract submit URL
                 submit_url = self._extract_submit_url(question_text, content)
                 
-                # Extract file URLs
                 file_urls = self._extract_file_urls(soup, url)
                 
                 return {
@@ -146,7 +135,6 @@ class QuizSolver:
     
     def _extract_submit_url(self, text: str, html: str) -> str:
         """Extract submit URL from question"""
-        # Look for submit endpoint
         patterns = [
             r'https://[^\s<>"\']+/submit',
             r'Post.*?to\s+(https://[^\s<>"\']+)',
@@ -167,7 +155,6 @@ class QuizSolver:
         
         for link in soup.find_all('a', href=True):
             href = link['href']
-            # Handle relative URLs
             if href.startswith('http'):
                 url = href
             else:
@@ -184,7 +171,6 @@ class QuizSolver:
         question = question_data['question']
         file_urls = question_data.get('file_urls', [])
         
-        # Download and process files
         processed_data = {}
         for url in file_urls:
             try:
@@ -203,7 +189,6 @@ class QuizSolver:
             except Exception as e:
                 print(f"Error processing {url}: {e}")
         
-        # Build prompt for LLM
         context = f"Question: {question}\n\n"
         
         if processed_data:
@@ -259,12 +244,10 @@ Answer:"""
                 for i, page in enumerate(pdf.pages, 1):
                     result.append(f"\n--- Page {i} ---")
                     
-                    # Extract text
                     text = page.extract_text()
                     if text:
                         result.append(text)
                     
-                    # Extract tables
                     tables = page.extract_tables()
                     for j, table in enumerate(tables, 1):
                         if table:
@@ -312,13 +295,11 @@ Answer:"""
     
     def _parse_answer(self, answer_text: str, question: str, data: dict) -> any:
         """Parse LLM answer into correct format"""
-        # Try JSON
         try:
             return json.loads(answer_text)
         except:
             pass
         
-        # Try number
         try:
             if '.' in answer_text:
                 return float(answer_text)
@@ -326,13 +307,11 @@ Answer:"""
         except:
             pass
         
-        # Try boolean
         if answer_text.lower() in ['true', 'yes']:
             return True
         elif answer_text.lower() in ['false', 'no']:
             return False
         
-        # Return as string
         return answer_text
     
     async def submit_answer(self, submit_url: str, quiz_url: str, answer: any) -> dict:
