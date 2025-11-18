@@ -317,7 +317,7 @@ Analyze the question and data carefully. Provide ONLY the answer in the appropri
 Answer:"""
 
         try:
-            logger.info("🤖 Calling LLM (gpt-4o)...")
+            logger.info("🤖 Calling LLM (gpt-5-mini)...")
             logger.debug(f"   Context length: {len(prompt)} chars")
             
             response = self.client.chat.completions.create(
@@ -327,7 +327,7 @@ Answer:"""
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0,
-                max_tokens=1000
+                max_completion_tokens=1000
             )
             
             answer_text = response.choices[0].message.content.strip()
@@ -405,7 +405,7 @@ Answer:"""
             
             logger.info("🤖 Calling vision model...")
             response = self.client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-5-mini",
                 messages=[
                     {
                         "role": "user",
@@ -418,7 +418,7 @@ Answer:"""
                         ]
                     }
                 ],
-                max_tokens=500
+                max_completion_tokens=500
             )
             
             result = response.choices[0].message.content
