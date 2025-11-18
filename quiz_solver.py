@@ -326,7 +326,6 @@ Answer:"""
                     {"role": "system", "content": "You are a precise data analyst. Return only the answer, no explanations."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0,
                 max_completion_tokens=1000
             )
             
