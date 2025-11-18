@@ -250,13 +250,13 @@ class QuizSolver:
                 if url.startswith("/"):
                     if base_url:
                         submit_url = urljoin(base_url, url)
-                        self.logger.info(f"✅ Relative submit URL found and joined: {submit_url}")
+                        logger.info(f"✅ Relative submit URL found and joined: {submit_url}")
                         return submit_url
                     else:
-                        self.logger.warning(f"⚠️ Found relative submit URL '{url}' but no base_url provided.")
+                        logger.warning(f"⚠️ Found relative submit URL '{url}' but no base_url provided.")
                         return url
                 else:
-                    self.logger.info(f"✅ Absolute submit URL found: {url}")
+                    logger.info(f"✅ Absolute submit URL found: {url}")
                     return url
 
         for tag in soup.find_all('a', href=True):
@@ -266,10 +266,10 @@ class QuizSolver:
                     submit_url = urljoin(base_url, href) if base_url else href
                 else:
                     submit_url = href
-                self.logger.info(f"✅ Found submit URL in anchor: {submit_url}")
+                logger.info(f"✅ Found submit URL in anchor: {submit_url}")
                 return submit_url
 
-        self.logger.warning("⚠️ Could not extract submit URL from page content")
+        logger.warning("⚠️ Could not extract submit URL from page content")
         return None
 
     
