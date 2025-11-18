@@ -219,64 +219,85 @@ class QuizSolver:
             return None
     
     def _extract_submit_url(self, html: str, base_url: str) -> str:
-        """
-        Extract the submit URL even if split across HTML tags (like <span class="origin">...</span>/submit).
-        """
-
+        
+        logger.debug(f"Extracting submit URL from base URL: {base_url}")
+        logger.debug(f"HTML snippet (first 500 chars): {html[:500]}")
+        
         soup = BeautifulSoup(html, "html.parser")
-
-        matching = None
-        for elem in soup.find_all(string=re.compile(r'POST this JSON to', re.I)):
+        
+        all_text = soup.get_text(separator=' ')
+        
+        absolute_patterns = [
+            r'https?://[^\s<>"\']+/submit\b',
+            r'POST\s+.*?\s+to\s+(https?://[^\s<>"\']+)',
+        ]
+        
+        for pattern in absolute_patterns:
+            matches = re.findall(pattern, all_text, re.IGNORECASE)
+            if matches:
+                url = matches[0].strip().rstrip('/')
+                if not url.endswith('/submit'):
+                    url += '/submit'
+                logger.info(f"✅ Found absolute submit URL: {url}")
+                return url
+        
+        for elem in soup.find_all(string=re.compile(r'POST\s+.*?\s+to', re.I)):
             parent = elem.parent
-            parts = [elem]
+            all_siblings = [elem]
             sib = elem.next_sibling
             while sib:
                 if isinstance(sib, NavigableString):
-                    parts.append(str(sib))
+                    all_siblings.append(str(sib))
                 elif isinstance(sib, Tag):
-                    parts.append(sib.get_text())
+                    all_siblings.append(sib.get_text())
                 sib = sib.next_sibling
-            submit_candidate = ''.join(parts).strip()
-            if '/submit' in submit_candidate:
-                matching = submit_candidate
-                break
-
-        if matching:
-            url_match = re.search(r'(https?://[^\s<>"\']+)\s*/submit', matching)
-            if url_match:
-                url = url_match.group(1) + '/submit'
-                logger.info(f"✅ Assembled submit URL: {url}")
-                return url
-            else:
-                m_domain = re.search(r'(https?://[^\s<>"\']+)', matching)
-                m_tail = re.search(r'/submit\b', matching)
-                if m_domain and m_tail:
-                    url = m_domain.group(1).rstrip('/') + '/submit'
-                    logger.info(f"✅ Assembled submit URL (fallback): {url}")
+            
+            combined = ''.join(all_siblings).strip()
+            
+            m = re.search(r'(https?://[^\s<>"\']+)', combined)
+            if m:
+                domain = m.group(1).rstrip('/')
+                if '/submit' in combined:
+                    url = domain + '/submit' if not domain.endswith('/submit') else domain
+                    logger.info(f"✅ Assembled submit URL from siblings: {url}")
                     return url
-
-        span = soup.find("span", {"class": "origin"})
-        if span:
-            domain = span.get_text().strip().rstrip('/')
-            suffix = None
-            sib = span.next_sibling
+        
+        origin_span = soup.find("span", class_="origin")
+        if origin_span:
+            domain_text = origin_span.get_text().strip().rstrip('/')
+            sib = origin_span.next_sibling
             while sib:
-                txt = sib if isinstance(sib, str) else sib.get_text()
+                txt = str(sib) if isinstance(sib, NavigableString) else sib.get_text()
                 if '/submit' in txt:
-                    suffix = '/submit'
-                    break
+                    url = domain_text + '/submit'
+                    logger.info(f"✅ Assembled URL from span.origin: {url}")
+                    return url
                 sib = sib.next_sibling
-            if domain and suffix:
-                url = domain + suffix
-                logger.info(f"✅ Assembled submit URL via span/origin: {url}")
-                return url
-
-        if '/submit' in html:
-            if base_url.startswith('http'):
-                url = urljoin(base_url, '/submit')
-                logger.info(f"✅ Fallback /submit joined with base: {url}")
-                return url
-        logger.warning("⚠️ Could not robustly extract submit URL")
+        
+        scripts = soup.find_all('script')
+        for script in scripts:
+            if script.string:
+                script_text = script.string
+                m = re.search(r'\.origin\s*=\s*["\']?([^"\';\s]+)', script_text)
+                if m:
+                    origin = m.group(1).rstrip('/')
+                    if '/submit' in script_text or '/submit' in all_text:
+                        url = origin + '/submit'
+                        logger.info(f"✅ Extracted origin from script, assembled: {url}")
+                        return url
+                
+                m2 = re.search(r'(https?://[^\s"\'<>]+/submit)', script_text)
+                if m2:
+                    url = m2.group(1)
+                    logger.info(f"✅ Found submit URL in script: {url}")
+                    return url
+        
+        if '/submit' in all_text and base_url and base_url.startswith('http'):
+            url = urljoin(base_url, '/submit')
+            logger.info(f"✅ Fallback: joined /submit with base URL: {url}")
+            return url
+        
+        logger.warning("⚠️ Could not extract submit URL")
         return None
 
     
