@@ -14,7 +14,7 @@ from PIL import Image
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString, Tag
 from urllib.parse import urljoin
 
 logging.basicConfig(
@@ -220,54 +220,63 @@ class QuizSolver:
     
     def _extract_submit_url(self, html: str, base_url: str) -> str:
         """
-        Scrape the HTML for absolute or relative submit URL.
-        - Checks visible text, code/pre tags, raw hrefs
-        - Handles both relative and absolute submit links
-        - Joins with base_url for relative URLs
+        Extract the submit URL even if split across HTML tags (like <span class="origin">...</span>/submit).
         """
+
         soup = BeautifulSoup(html, "html.parser")
-        lines = []
-        lines += soup.stripped_strings
-        for tag in soup.find_all(['code', 'pre', 'script']):
-            if tag.string:
-                lines.append(tag.string)
+
+        matching = None
+        for elem in soup.find_all(string=re.compile(r'POST this JSON to', re.I)):
+            parent = elem.parent
+            parts = [elem]
+            sib = elem.next_sibling
+            while sib:
+                if isinstance(sib, NavigableString):
+                    parts.append(str(sib))
+                elif isinstance(sib, Tag):
+                    parts.append(sib.get_text())
+                sib = sib.next_sibling
+            submit_candidate = ''.join(parts).strip()
+            if '/submit' in submit_candidate:
+                matching = submit_candidate
+                break
+
+        if matching:
+            url_match = re.search(r'(https?://[^\s<>"\']+)\s*/submit', matching)
+            if url_match:
+                url = url_match.group(1) + '/submit'
+                logger.info(f"✅ Assembled submit URL: {url}")
+                return url
             else:
-                lines += tag.stripped_strings
-        alltext = "\n".join(lines)
+                m_domain = re.search(r'(https?://[^\s<>"\']+)', matching)
+                m_tail = re.search(r'/submit\b', matching)
+                if m_domain and m_tail:
+                    url = m_domain.group(1).rstrip('/') + '/submit'
+                    logger.info(f"✅ Assembled submit URL (fallback): {url}")
+                    return url
 
-        patterns = [
-            r'post\s+\w+\s+to\s+(https?://[^\s"\'>]+)',
-            r'post\s+\w+\s+to\s+(/[\w\-/]+)', 
-            r'(https?://[^\s"\'<>]+/submit)\b',
-            r'(/submit)\b'
-        ]
+        span = soup.find("span", {"class": "origin"})
+        if span:
+            domain = span.get_text().strip().rstrip('/')
+            suffix = None
+            sib = span.next_sibling
+            while sib:
+                txt = sib if isinstance(sib, str) else sib.get_text()
+                if '/submit' in txt:
+                    suffix = '/submit'
+                    break
+                sib = sib.next_sibling
+            if domain and suffix:
+                url = domain + suffix
+                logger.info(f"✅ Assembled submit URL via span/origin: {url}")
+                return url
 
-        for pat in patterns:
-            m = re.search(pat, alltext, re.IGNORECASE)
-            if m:
-                submit_url = m.group(1).strip()
-                if submit_url.startswith("/"):
-                    if not (base_url.startswith("http://") or base_url.startswith("https://")):
-                        logger.warning(f"Base URL not absolute: {base_url}")
-                        return None
-                    full_url = urljoin(base_url, submit_url)
-                    logger.info(f"✅ Found relative submit URL '{submit_url}', joined to base: {full_url}")
-                    return full_url
-                else:
-                    logger.info(f"✅ Found absolute submit URL: {submit_url}")
-                    return submit_url
-
-        for tag in soup.find_all('a', href=True):
-            if 'submit' in tag['href']:
-                href = tag['href']
-                if href.startswith("/"):
-                    full_url = urljoin(base_url, href)
-                else:
-                    full_url = href
-                logger.info(f"✅ Found submit URL in anchor: {full_url}")
-                return full_url
-
-        logger.warning("⚠️ Could not extract submit URL from HTML/text")
+        if '/submit' in html:
+            if base_url.startswith('http'):
+                url = urljoin(base_url, '/submit')
+                logger.info(f"✅ Fallback /submit joined with base: {url}")
+                return url
+        logger.warning("⚠️ Could not robustly extract submit URL")
         return None
 
     
