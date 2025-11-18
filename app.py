@@ -6,7 +6,6 @@ from quiz_solver import QuizSolver
 
 app = FastAPI(title="LLM Quiz Solver")
 
-# Environment variables will be set in Render dashboard
 MY_EMAIL = os.getenv("MY_EMAIL")
 MY_SECRET = os.getenv("MY_SECRET")
 
@@ -36,7 +35,6 @@ async def handle_quiz(request: QuizRequest):
     Main endpoint to receive quiz tasks
     Validates credentials and starts quiz solving
     """
-    # Validate secret
     if not MY_SECRET:
         raise HTTPException(
             status_code=500, 
@@ -49,7 +47,6 @@ async def handle_quiz(request: QuizRequest):
             detail="Invalid secret"
         )
     
-    # Validate email
     if not MY_EMAIL:
         raise HTTPException(
             status_code=500,
@@ -62,7 +59,6 @@ async def handle_quiz(request: QuizRequest):
             detail="Invalid email"
         )
     
-    # Start quiz solving asynchronously
     solver = QuizSolver(request.email, request.secret)
     asyncio.create_task(solver.solve_quiz_chain(request.url))
     
