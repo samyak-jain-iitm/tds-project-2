@@ -218,58 +218,56 @@ class QuizSolver:
             logger.exception("Full traceback:")
             return None
     
-    def _extract_submit_url(self, html: str, base_url: str = "") -> str:
+    def _extract_submit_url(self, html: str, base_url: str) -> str:
         """
-        Scrape the entire HTML for the submit URL.
-        Looks at visible text, code/pre blocks, and hrefs.
+        Scrape the HTML for absolute or relative submit URL.
+        - Checks visible text, code/pre tags, raw hrefs
+        - Handles both relative and absolute submit links
+        - Joins with base_url for relative URLs
         """
-        soup = BeautifulSoup(html, "lxml")
-
+        soup = BeautifulSoup(html, "html.parser")
         lines = []
         lines += soup.stripped_strings
-        for tag in soup.find_all(['code', 'pre']):
-            lines += tag.stripped_strings
-
-        for tag in soup.find_all(['script']):
+        for tag in soup.find_all(['code', 'pre', 'script']):
             if tag.string:
                 lines.append(tag.string)
-
+            else:
+                lines += tag.stripped_strings
         alltext = "\n".join(lines)
 
-        url_patterns = [
-            r'post\s+\w+\s+to\s+(https?://[^\s"\'<>]+)',        
-            r'post\s+\w+\s+to\s+(/[\w/\-]+)',                  
-            r'(https?://[^\s"\'<>]+/submit)',                  
-            r'(\/submit\b)',                                   
+        patterns = [
+            r'post\s+\w+\s+to\s+(https?://[^\s"\'>]+)',
+            r'post\s+\w+\s+to\s+(/[\w\-/]+)', 
+            r'(https?://[^\s"\'<>]+/submit)\b',
+            r'(/submit)\b'
         ]
 
-        for pat in url_patterns:
+        for pat in patterns:
             m = re.search(pat, alltext, re.IGNORECASE)
             if m:
-                url = m.group(1).strip()
-                if url.startswith("/"):
-                    if base_url:
-                        submit_url = urljoin(base_url, url)
-                        logger.info(f"✅ Relative submit URL found and joined: {submit_url}")
-                        return submit_url
-                    else:
-                        logger.warning(f"⚠️ Found relative submit URL '{url}' but no base_url provided.")
-                        return url
+                submit_url = m.group(1).strip()
+                if submit_url.startswith("/"):
+                    if not (base_url.startswith("http://") or base_url.startswith("https://")):
+                        self.logger.warning(f"Base URL not absolute: {base_url}")
+                        return None
+                    full_url = urljoin(base_url, submit_url)
+                    self.logger.info(f"✅ Found relative submit URL '{submit_url}', joined to base: {full_url}")
+                    return full_url
                 else:
-                    logger.info(f"✅ Absolute submit URL found: {url}")
-                    return url
+                    self.logger.info(f"✅ Found absolute submit URL: {submit_url}")
+                    return submit_url
 
         for tag in soup.find_all('a', href=True):
             if 'submit' in tag['href']:
                 href = tag['href']
                 if href.startswith("/"):
-                    submit_url = urljoin(base_url, href) if base_url else href
+                    full_url = urljoin(base_url, href)
                 else:
-                    submit_url = href
-                logger.info(f"✅ Found submit URL in anchor: {submit_url}")
-                return submit_url
+                    full_url = href
+                self.logger.info(f"✅ Found submit URL in anchor: {full_url}")
+                return full_url
 
-        logger.warning("⚠️ Could not extract submit URL from page content")
+        self.logger.warning("⚠️ Could not extract submit URL from HTML/text")
         return None
 
     
