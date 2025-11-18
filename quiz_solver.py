@@ -193,7 +193,7 @@ class QuizSolver:
                         question_text = decoded
                         question_html = decoded
             
-            submit_url = self._extract_submit_url(question_text, response.text)
+            submit_url = self._extract_submit_url(response.text, url)
             file_urls = self._extract_file_urls(soup, url)
             
             if submit_url:
