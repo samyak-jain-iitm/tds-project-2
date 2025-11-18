@@ -305,16 +305,26 @@ class QuizSolver:
         
         prompt = f"""{context}
 
-Analyze the question and data carefully. Provide ONLY the answer in the appropriate format:
-- For numbers: return just the number (e.g., 42 or 3.14)
-- For strings: return just the text
-- For booleans: return true or false
-- For JSON: return valid JSON object
-- For images/charts: return "CHART_NEEDED"
-- If "your email" is asked for, use "{self.email}".
-- If "your secret" is asked for, use "{self.secret}".
+INSTRUCTIONS:
+You are solving a quiz that will submit the following JSON:
+{{
+  "email": "{self.email}",
+  "secret": "{self.secret}",
+  "url": "{question_data.get('url','URL')}",
+  "answer": (YOUR ANSWER GOES HERE)
+}}
 
-Answer:"""
+YOUR TASK:
+Return ONLY the value for the "answer" key. The "answer" may need to be a boolean, number, string, base64 URI of a file attachment, or a JSON object with a combination of these.
+- If the answer should be a number, output just the number (e.g., 42, 3.14)
+- If the answer should be a string, output just the string, no quotes
+- If the answer should be true or false, output true or false
+- If the answer should be an object (explicitly requested), return a valid JSON object
+
+Just output the value to use for "answer", and NOTHING ELSE.
+
+Answer:
+"""
 
         try:
             logger.info("🤖 Calling LLM (gpt-5-mini)...")
