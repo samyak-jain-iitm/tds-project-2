@@ -311,6 +311,8 @@ Analyze the question and data carefully. Provide ONLY the answer in the appropri
 - For booleans: return true or false
 - For JSON: return valid JSON object
 - For images/charts: return "CHART_NEEDED"
+- If "your email" is asked for, use "{self.email}".
+- If "your secret" is asked for, use "{self.secret}".
 
 Answer:"""
 
@@ -319,7 +321,7 @@ Answer:"""
             logger.debug(f"   Context length: {len(prompt)} chars")
             
             response = self.client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-5-mini",
                 messages=[
                     {"role": "system", "content": "You are a precise data analyst. Return only the answer, no explanations."},
                     {"role": "user", "content": prompt}
