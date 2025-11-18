@@ -5,6 +5,7 @@ import base64
 import os
 import time
 import re
+import logging
 from playwright.async_api import async_playwright
 from openai import OpenAI
 import pdfplumber
@@ -12,20 +13,40 @@ import pandas as pd
 from io import BytesIO
 from PIL import Image
 import matplotlib
-matplotlib.use('Agg') 
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from bs4 import BeautifulSoup
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+
 class QuizSolver:
     def __init__(self, email: str, secret: str):
+        """Initialize QuizSolver with credentials"""
         self.email = email
         self.secret = secret
         
+        logger.info(f"🔧 Initializing QuizSolver for {email[:10]}...")
+        
         openai_key = os.getenv("AI_PIPE_TOKEN")
         if not openai_key:
-            raise ValueError("OPENAI_API_KEY not set in environment")
+            logger.error("❌ AI_PIPE_TOKEN not set in environment")
+            raise ValueError("AI_PIPE_TOKEN not set in environment")
         
-        self.client = OpenAI(api_key=openai_key, base_url="https://aipipe.org/openai/v1")
+        logger.info("✅ AI_PIPE_TOKEN found")
+        
+        try:
+            self.client = OpenAI(api_key=openai_key, base_url="https://aipipe.org/openai/v1")
+            logger.info("✅ OpenAI client initialized")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize OpenAI client: {e}")
+            raise
+        
         self.start_time = None
         
     async def solve_quiz_chain(self, initial_url: str):
@@ -36,29 +57,49 @@ class QuizSolver:
         current_url = initial_url
         max_iterations = 20
         
-        print(f"Starting quiz chain from: {initial_url}")
+        logger.info("="*80)
+        logger.info(f"🚀 STARTING QUIZ CHAIN")
+        logger.info(f"📍 Initial URL: {initial_url}")
+        logger.info(f"⏱️  Max time: 170 seconds")
+        logger.info("="*80)
+        
+        questions_solved = 0
+        questions_correct = 0
+        questions_wrong = 0
         
         for i in range(max_iterations):
             elapsed = time.time() - self.start_time
             if elapsed > 170:
-                print(f"Time limit approaching ({elapsed:.1f}s), stopping")
+                logger.warning(f"⏰ TIME LIMIT APPROACHING ({elapsed:.1f}s) - Stopping")
                 break
-                
-            print(f"\n{'='*60}")
-            print(f"Quiz {i+1}: {current_url}")
-            print(f"Elapsed time: {elapsed:.1f}s")
+            
+            logger.info("")
+            logger.info("="*80)
+            logger.info(f"📝 QUIZ #{i+1}")
+            logger.info(f"🔗 URL: {current_url}")
+            logger.info(f"⏱️  Elapsed: {elapsed:.1f}s / 170s")
+            logger.info("-"*80)
             
             try:
+                # Fetch quiz page
+                logger.info("🌐 Fetching quiz page...")
                 question_data = await self.fetch_quiz_page(current_url)
+                
                 if not question_data:
-                    print("Failed to fetch quiz page")
+                    logger.error("❌ Failed to fetch quiz page - Stopping")
                     break
                 
-                print(f"Question: {question_data['question'][:100]}...")
+                logger.info(f"✅ Quiz page fetched successfully")
+                logger.info(f"❓ Question: {question_data['question'][:150]}...")
+                logger.info(f"📎 Files found: {len(question_data.get('file_urls', []))}")
                 
+                # Solve the question
+                logger.info("🤖 Solving question with LLM...")
                 answer = await self.solve_question(question_data)
-                print(f"Answer generated: {str(answer)[:100]}")
+                logger.info(f"💡 Answer generated: {str(answer)[:100]}")
                 
+                # Submit answer
+                logger.info("📤 Submitting answer...")
                 result = await self.submit_answer(
                     question_data['submit_url'],
                     current_url,
@@ -66,61 +107,101 @@ class QuizSolver:
                 )
                 
                 if not result:
-                    print("Failed to submit answer")
+                    logger.error("❌ Failed to submit answer - Stopping")
                     break
+                
+                questions_solved += 1
                 
                 # Check result
                 if result.get('correct'):
-                    print("✅ Answer correct!")
+                    questions_correct += 1
+                    logger.info("✅ ✅ ✅ ANSWER CORRECT! ✅ ✅ ✅")
+                    
                     if result.get('url'):
                         current_url = result['url']
-                        print(f"Next quiz: {current_url}")
+                        logger.info(f"➡️  Moving to next quiz: {current_url}")
                     else:
-                        print("🎉 Quiz chain completed!")
+                        logger.info("="*80)
+                        logger.info("🎉 🎉 🎉 QUIZ CHAIN COMPLETED SUCCESSFULLY! 🎉 🎉 🎉")
+                        logger.info("="*80)
                         break
                 else:
-                    print(f"❌ Answer incorrect: {result.get('reason', 'No reason given')}")
+                    questions_wrong += 1
+                    reason = result.get('reason', 'No reason provided')
+                    logger.warning(f"❌ ANSWER INCORRECT")
+                    logger.warning(f"📋 Reason: {reason}")
+                    
                     if result.get('url'):
                         current_url = result['url']
-                        print(f"Moving to next: {current_url}")
+                        logger.info(f"➡️  Moving to next quiz anyway: {current_url}")
                     else:
-                        print("No next URL, stopping")
+                        logger.error("🛑 No next URL provided - Stopping")
                         break
                         
             except Exception as e:
-                print(f"Error in quiz {i+1}: {str(e)}")
-                import traceback
-                traceback.print_exc()
+                logger.error(f"💥 ERROR in quiz #{i+1}: {str(e)}")
+                logger.exception("Full traceback:")
                 break
         
-        print(f"\nQuiz solving ended. Total time: {time.time() - self.start_time:.1f}s")
+        # Final summary
+        total_time = time.time() - self.start_time
+        logger.info("")
+        logger.info("="*80)
+        logger.info("🏁 QUIZ CHAIN ENDED")
+        logger.info("-"*80)
+        logger.info(f"📊 Questions solved: {questions_solved}")
+        logger.info(f"✅ Correct answers: {questions_correct}")
+        logger.info(f"❌ Wrong answers: {questions_wrong}")
+        logger.info(f"⏱️  Total time: {total_time:.2f} seconds")
+        if questions_solved > 0:
+            accuracy = (questions_correct / questions_solved) * 100
+            logger.info(f"📈 Accuracy: {accuracy:.1f}%")
+        logger.info("="*80)
     
     async def fetch_quiz_page(self, url: str) -> dict:
         """Fetch and parse quiz page using headless browser"""
         try:
+            logger.debug(f"🌐 Launching headless browser for {url}")
+            
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
                 page = await browser.new_page()
                 
+                logger.debug("⏳ Navigating to page...")
                 await page.goto(url, wait_until='networkidle', timeout=30000)
                 await page.wait_for_timeout(2000)
                 
+                logger.debug("📄 Extracting page content...")
                 content = await page.content()
                 
                 result_element = await page.query_selector("#result")
                 if result_element:
                     question_html = await result_element.inner_html()
+                    logger.debug("✅ Found #result element")
                 else:
                     question_html = content
+                    logger.debug("⚠️  No #result element, using full page")
                 
                 await browser.close()
+                logger.debug("✅ Browser closed")
                 
+                # Parse HTML
                 soup = BeautifulSoup(question_html, 'html.parser')
                 question_text = soup.get_text(separator=' ', strip=True)
                 
+                # Extract URLs
                 submit_url = self._extract_submit_url(question_text, content)
-                
                 file_urls = self._extract_file_urls(soup, url)
+                
+                if submit_url:
+                    logger.info(f"✅ Submit URL found: {submit_url}")
+                else:
+                    logger.warning("⚠️  No submit URL found")
+                
+                if file_urls:
+                    logger.info(f"📎 Found {len(file_urls)} file(s) to download:")
+                    for furl in file_urls:
+                        logger.info(f"   • {furl}")
                 
                 return {
                     'question': question_text,
@@ -130,7 +211,8 @@ class QuizSolver:
                 }
                 
         except Exception as e:
-            print(f"Error fetching page: {e}")
+            logger.error(f"❌ Error fetching page: {e}")
+            logger.exception("Full traceback:")
             return None
     
     def _extract_submit_url(self, text: str, html: str) -> str:
@@ -144,8 +226,10 @@ class QuizSolver:
         for pattern in patterns:
             matches = re.findall(pattern, text + html, re.IGNORECASE)
             if matches:
+                logger.debug(f"✅ Submit URL extracted with pattern: {pattern}")
                 return matches[0]
         
+        logger.warning("⚠️  Could not extract submit URL")
         return None
     
     def _extract_file_urls(self, soup: BeautifulSoup, base_url: str) -> list:
@@ -164,6 +248,7 @@ class QuizSolver:
             if any(ext in url.lower() for ext in extensions):
                 file_urls.append(url)
         
+        logger.debug(f"📎 Extracted {len(file_urls)} file URL(s)")
         return file_urls
     
     async def solve_question(self, question_data: dict) -> any:
@@ -171,24 +256,41 @@ class QuizSolver:
         question = question_data['question']
         file_urls = question_data.get('file_urls', [])
         
+        logger.info(f"🔍 Analyzing question ({len(question)} chars)")
+        
+        # Download and process files
         processed_data = {}
-        for url in file_urls:
+        if file_urls:
+            logger.info(f"📥 Downloading and processing {len(file_urls)} file(s)...")
+            
+        for idx, url in enumerate(file_urls, 1):
             try:
+                logger.info(f"   📥 [{idx}/{len(file_urls)}] Downloading: {url}")
                 content = await self._download_file(url)
+                logger.info(f"   ✅ Downloaded {len(content)} bytes")
                 
                 if '.pdf' in url.lower():
+                    logger.info(f"   📄 Processing as PDF...")
                     processed_data[url] = self._process_pdf(content)
                 elif '.csv' in url.lower():
+                    logger.info(f"   📊 Processing as CSV...")
                     processed_data[url] = self._process_csv(content)
                 elif '.json' in url.lower():
+                    logger.info(f"   📋 Processing as JSON...")
                     processed_data[url] = json.loads(content)
                 elif any(ext in url.lower() for ext in ['.png', '.jpg', '.jpeg']):
+                    logger.info(f"   🖼️  Processing as Image...")
                     processed_data[url] = self._process_image(content)
                 else:
+                    logger.info(f"   📝 Processing as text...")
                     processed_data[url] = content.decode('utf-8', errors='ignore')
+                
+                logger.info(f"   ✅ File processed successfully")
+                
             except Exception as e:
-                print(f"Error processing {url}: {e}")
+                logger.error(f"   ❌ Error processing {url}: {e}")
         
+        # Build context for LLM
         context = f"Question: {question}\n\n"
         
         if processed_data:
@@ -211,6 +313,9 @@ Analyze the question and data carefully. Provide ONLY the answer in the appropri
 Answer:"""
 
         try:
+            logger.info("🤖 Calling LLM (gpt-4o)...")
+            logger.debug(f"   Context length: {len(prompt)} chars")
+            
             response = self.client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
@@ -222,18 +327,24 @@ Answer:"""
             )
             
             answer_text = response.choices[0].message.content.strip()
+            logger.info(f"✅ LLM response received: {answer_text[:100]}")
+            
             answer = self._parse_answer(answer_text, question, processed_data)
+            logger.info(f"✅ Answer parsed as type: {type(answer).__name__}")
             
             return answer
             
         except Exception as e:
-            print(f"Error calling LLM: {e}")
+            logger.error(f"❌ Error calling LLM: {e}")
+            logger.exception("Full traceback:")
             return "Error"
     
     async def _download_file(self, url: str) -> bytes:
         """Download file from URL"""
+        logger.debug(f"⬇️  Downloading: {url}")
         response = requests.get(url, timeout=30)
         response.raise_for_status()
+        logger.debug(f"✅ Downloaded {len(response.content)} bytes")
         return response.content
     
     def _process_pdf(self, content: bytes) -> str:
@@ -241,20 +352,31 @@ Answer:"""
         result = []
         try:
             with pdfplumber.open(BytesIO(content)) as pdf:
+                logger.debug(f"📄 PDF has {len(pdf.pages)} page(s)")
+                
                 for i, page in enumerate(pdf.pages, 1):
                     result.append(f"\n--- Page {i} ---")
                     
                     text = page.extract_text()
                     if text:
                         result.append(text)
+                        logger.debug(f"   Page {i}: {len(text)} chars extracted")
                     
                     tables = page.extract_tables()
+                    if tables:
+                        logger.debug(f"   Page {i}: {len(tables)} table(s) found")
+                    
                     for j, table in enumerate(tables, 1):
                         if table:
                             result.append(f"\nTable {j}:")
                             df = pd.DataFrame(table[1:], columns=table[0] if table else None)
                             result.append(df.to_string())
+                            logger.debug(f"   Table {j}: {df.shape[0]} rows, {df.shape[1]} cols")
+                            
+            logger.info(f"✅ PDF processed: {len(pdf.pages)} pages, {len(result)} sections")
+                            
         except Exception as e:
+            logger.error(f"❌ Error processing PDF: {e}")
             result.append(f"Error processing PDF: {e}")
         
         return "\n".join(result)
@@ -263,15 +385,21 @@ Answer:"""
         """Process CSV file"""
         try:
             df = pd.read_csv(BytesIO(content))
+            logger.info(f"✅ CSV processed: {df.shape[0]} rows, {df.shape[1]} columns")
+            logger.debug(f"   Columns: {list(df.columns)}")
             return f"Shape: {df.shape}\n\n{df.to_string()}"
         except Exception as e:
+            logger.error(f"❌ Error processing CSV: {e}")
             return f"Error processing CSV: {e}"
     
     def _process_image(self, content: bytes) -> str:
         """Process image using vision model"""
         try:
+            logger.info("🖼️  Encoding image to base64...")
             img_base64 = base64.b64encode(content).decode('utf-8')
+            logger.debug(f"   Base64 length: {len(img_base64)} chars")
             
+            logger.info("🤖 Calling vision model...")
             response = self.client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
@@ -289,35 +417,54 @@ Answer:"""
                 max_tokens=500
             )
             
-            return response.choices[0].message.content
+            result = response.choices[0].message.content
+            logger.info(f"✅ Vision model response: {len(result)} chars")
+            return result
+            
         except Exception as e:
+            logger.error(f"❌ Error processing image: {e}")
             return f"Error processing image: {e}"
     
     def _parse_answer(self, answer_text: str, question: str, data: dict) -> any:
         """Parse LLM answer into correct format"""
+        logger.debug(f"🔍 Parsing answer: {answer_text[:50]}...")
+        
+        # Try JSON
         try:
-            return json.loads(answer_text)
+            parsed = json.loads(answer_text)
+            logger.debug("   ✅ Parsed as JSON")
+            return parsed
         except:
             pass
         
+        # Try number
         try:
             if '.' in answer_text:
-                return float(answer_text)
-            return int(answer_text)
+                parsed = float(answer_text)
+                logger.debug(f"   ✅ Parsed as float: {parsed}")
+                return parsed
+            parsed = int(answer_text)
+            logger.debug(f"   ✅ Parsed as int: {parsed}")
+            return parsed
         except:
             pass
         
+        # Try boolean
         if answer_text.lower() in ['true', 'yes']:
+            logger.debug("   ✅ Parsed as boolean: True")
             return True
         elif answer_text.lower() in ['false', 'no']:
+            logger.debug("   ✅ Parsed as boolean: False")
             return False
         
+        # Return as string
+        logger.debug("   ✅ Returned as string")
         return answer_text
     
     async def submit_answer(self, submit_url: str, quiz_url: str, answer: any) -> dict:
         """Submit answer to quiz endpoint"""
         if not submit_url:
-            print("No submit URL found")
+            logger.error("❌ No submit URL found - cannot submit answer")
             return None
         
         payload = {
@@ -327,15 +474,24 @@ Answer:"""
             "answer": answer
         }
         
+        logger.info(f"📤 Submitting to: {submit_url}")
+        logger.debug(f"   Payload: {json.dumps(payload, indent=2)[:200]}")
+        
         try:
             response = requests.post(submit_url, json=payload, timeout=15)
             
+            logger.info(f"📥 Response status: {response.status_code}")
+            
             if response.status_code == 200:
-                return response.json()
+                result = response.json()
+                logger.debug(f"   Response: {json.dumps(result, indent=2)}")
+                return result
             else:
-                print(f"Submit failed: {response.status_code} - {response.text}")
+                logger.error(f"❌ Submit failed: {response.status_code}")
+                logger.error(f"   Response: {response.text[:200]}")
                 return None
                 
         except Exception as e:
-            print(f"Error submitting: {e}")
+            logger.error(f"❌ Error submitting answer: {e}")
+            logger.exception("Full traceback:")
             return None
