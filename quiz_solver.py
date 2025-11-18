@@ -218,21 +218,38 @@ class QuizSolver:
             return None
     
     def _extract_submit_url(self, text: str, html: str) -> str:
-        """Extract submit URL from question"""
+        """
+        Extract submit URL from HTML page content or code.
+        """
+        m = re.search(
+            r'POST [^ ]* to (https?://[^\s"\'>]+)',  
+            text + html, re.IGNORECASE
+        )
+        if m:
+            logger.info(f"✅ Extracted submit URL via 'POST ... to ...': {m.group(1)}")
+            return m.group(1)
+
         patterns = [
-            r'https://[^\s<>"\']+/submit',
-            r'Post.*?to\s+(https://[^\s<>"\']+)',
-            r'submit.*?(https://[^\s<>"\']+)'
+            r'https?://[^\s<>"\']+/submit',
+            r'Post.*?to\s+(https?://[^\s<>"\']+)',
+            r'submit.*?(https?://[^\s<>"\']+)'
         ]
-        
         for pattern in patterns:
             matches = re.findall(pattern, text + html, re.IGNORECASE)
             if matches:
-                logger.debug(f"✅ Submit URL extracted with pattern: {pattern}")
+                logger.info(f"✅ Extracted submit URL via fallback pattern: {matches[0]}")
                 return matches[0]
-        
+
+        m2 = re.search(
+            r'POST [^ ]* to (/submit)', text + html, re.IGNORECASE
+        )
+        if m2:
+            logger.info(f"✅ Found /submit endpoint instruction. You may need to prepend domain.")
+            return m2.group(1)
+
         logger.warning("⚠️  Could not extract submit URL")
         return None
+
     
     def _extract_file_urls(self, soup: BeautifulSoup, base_url: str) -> list:
         """Extract downloadable file URLs"""
