@@ -15,6 +15,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
 logging.basicConfig(
     level=logging.INFO,
@@ -217,37 +218,58 @@ class QuizSolver:
             logger.exception("Full traceback:")
             return None
     
-    def _extract_submit_url(self, text: str, html: str) -> str:
+    def _extract_submit_url(self, html: str, base_url: str = "") -> str:
         """
-        Extract submit URL from HTML page content or code.
+        Scrape the entire HTML for the submit URL.
+        Looks at visible text, code/pre blocks, and hrefs.
         """
-        m = re.search(
-            r'POST [^ ]* to (https?://[^\s"\'>]+)',  
-            text + html, re.IGNORECASE
-        )
-        if m:
-            logger.info(f"✅ Extracted submit URL via 'POST ... to ...': {m.group(1)}")
-            return m.group(1)
+        soup = BeautifulSoup(html, "lxml")
 
-        patterns = [
-            r'https?://[^\s<>"\']+/submit',
-            r'Post.*?to\s+(https?://[^\s<>"\']+)',
-            r'submit.*?(https?://[^\s<>"\']+)'
+        lines = []
+        lines += soup.stripped_strings
+        for tag in soup.find_all(['code', 'pre']):
+            lines += tag.stripped_strings
+
+        for tag in soup.find_all(['script']):
+            if tag.string:
+                lines.append(tag.string)
+
+        alltext = "\n".join(lines)
+
+        url_patterns = [
+            r'post\s+\w+\s+to\s+(https?://[^\s"\'<>]+)',        
+            r'post\s+\w+\s+to\s+(/[\w/\-]+)',                  
+            r'(https?://[^\s"\'<>]+/submit)',                  
+            r'(\/submit\b)',                                   
         ]
-        for pattern in patterns:
-            matches = re.findall(pattern, text + html, re.IGNORECASE)
-            if matches:
-                logger.info(f"✅ Extracted submit URL via fallback pattern: {matches[0]}")
-                return matches[0]
 
-        m2 = re.search(
-            r'POST [^ ]* to (/submit)', text + html, re.IGNORECASE
-        )
-        if m2:
-            logger.info(f"✅ Found /submit endpoint instruction. You may need to prepend domain.")
-            return m2.group(1)
+        for pat in url_patterns:
+            m = re.search(pat, alltext, re.IGNORECASE)
+            if m:
+                url = m.group(1).strip()
+                if url.startswith("/"):
+                    if base_url:
+                        submit_url = urljoin(base_url, url)
+                        self.logger.info(f"✅ Relative submit URL found and joined: {submit_url}")
+                        return submit_url
+                    else:
+                        self.logger.warning(f"⚠️ Found relative submit URL '{url}' but no base_url provided.")
+                        return url
+                else:
+                    self.logger.info(f"✅ Absolute submit URL found: {url}")
+                    return url
 
-        logger.warning("⚠️  Could not extract submit URL")
+        for tag in soup.find_all('a', href=True):
+            if 'submit' in tag['href']:
+                href = tag['href']
+                if href.startswith("/"):
+                    submit_url = urljoin(base_url, href) if base_url else href
+                else:
+                    submit_url = href
+                self.logger.info(f"✅ Found submit URL in anchor: {submit_url}")
+                return submit_url
+
+        self.logger.warning("⚠️ Could not extract submit URL from page content")
         return None
 
     
