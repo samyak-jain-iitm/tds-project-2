@@ -80,19 +80,28 @@ class QuizSolver:
         
         try:
             options = Options()
-            options.add_argument('--headless')
+            options.add_argument('--headless=new')
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--disable-gpu')
+            options.add_argument('--window-size=1920,1080')
             
-            self.driver = webdriver.Chrome(
-                service=Service(ChromeDriverManager().install()),
-                options=options
-            )
-            logger.info("✅ Selenium WebDriver initialized")
+            chrome_bin = os.getenv("CHROME_BIN", "/usr/bin/google-chrome-stable")
+            options.binary_location = chrome_bin
+            logger.info(f"🔧 Using Chrome binary at: {chrome_bin}")
+
+            from webdriver_manager.chrome import ChromeDriverManager
+            from selenium.webdriver.chrome.service import Service
+
+            service = Service(ChromeDriverManager().install())
+            
+            self.driver = webdriver.Chrome(service=service, options=options)
+            logger.info("✅ Selenium WebDriver initialized successfully")
             return True
+
         except Exception as e:
             logger.error(f"❌ Failed to initialize Selenium: {e}")
+            logger.exception("Full traceback:")
             return False
 
     def _scrape_with_selenium(self, url: str) -> str:
