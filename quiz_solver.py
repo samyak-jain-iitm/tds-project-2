@@ -416,43 +416,52 @@ class QuizSolver:
     
     def _process_audio(self, content: bytes) -> str:
         try:
-            logger.info("🎵 Processing audio file with local Whisper...")
+            logger.info("🎵 Processing audio file...")
             
             try:
                 from faster_whisper import WhisperModel
             except ImportError:
-                logger.error("❌ faster-whisper not installed")
                 return "[Audio transcription unavailable - install faster-whisper]"
             
             import tempfile
             import os
+            import gc  # Import Garbage Collector
             
             # Save audio to temp file
             with tempfile.NamedTemporaryFile(suffix='.opus', delete=False) as temp_audio:
                 temp_audio.write(content)
                 temp_audio_path = temp_audio.name
             
+            model = None
             try:
-                # Initialize model (downloads on first use, cached after)
-                logger.info("   Loading Whisper model (base)...")
-                model = WhisperModel("base", device="cpu", compute_type="int8")
+                # 1. Use "tiny" instead of "base"
+                # 2. Ensure we use int8 quantization to save RAM
+                # 3. restrict threads to prevent CPU spikes that look like memory leaks
+                logger.info("   Loading Whisper model (tiny)...")
+                model = WhisperModel("tiny", device="cpu", compute_type="int8", cpu_threads=2)
                 
-                # Transcribe
-                logger.info("   Transcribing audio...")
+                logger.info("   Transcribing audio...")
                 segments, info = model.transcribe(temp_audio_path, beam_size=5)
                 
-                # Combine all segments
                 transcript = " ".join([segment.text for segment in segments])
-                
-                logger.info(f"✅ Audio transcribed: {transcript}")
+                logger.info(f"✅ Audio transcribed: {transcript[:50]}...")
                 return transcript
                 
             finally:
-                os.unlink(temp_audio_path)
+                # CLEANUP FILES
+                if os.path.exists(temp_audio_path):
+                    os.unlink(temp_audio_path)
+                
+                # CRITICAL MEMORY CLEANUP
+                # We must delete the model and force garbage collection 
+                # to give RAM back to Selenium
+                if model:
+                    del model
+                gc.collect()
+                logger.info("🗑️ RAM cleaned up")
                 
         except Exception as e:
             logger.error(f"❌ Error processing audio: {e}")
-            logger.exception("Full audio error:")
             return "[Audio transcription failed]"
 
     async def solve_question(self, question_data: dict) -> any:
