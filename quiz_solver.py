@@ -415,53 +415,39 @@ class QuizSolver:
         return file_urls
     
     def _process_audio(self, content: bytes) -> str:
+        import speech_recognition as sr
+        import os
+        import tempfile
+        from pydub import AudioSegment 
+
         try:
-            logger.info("🎵 Processing audio file...")
+            logger.info("🎵 Using Google Web Speech (Cloud)...")
             
-            try:
-                from faster_whisper import WhisperModel
-            except ImportError:
-                return "[Audio transcription unavailable - install faster-whisper]"
+            # 1. Write original content (likely opus/mp3) to file
+            with tempfile.NamedTemporaryFile(suffix='.opus', delete=False) as temp_opus:
+                temp_opus.write(content)
+                opus_path = temp_opus.name
+
+            # 2. Convert to WAV (Required by SpeechRecognition) using ffmpeg (installed in Docker)
+            wav_path = opus_path + ".wav"
+            os.system(f"ffmpeg -i {opus_path} -ar 16000 -ac 1 {wav_path} -y -hide_banner -loglevel error")
+
+            # 3. Send to Google
+            r = sr.Recognizer()
+            with sr.AudioFile(wav_path) as source:
+                audio_data = r.record(source)
+                # This uses Google's free text-to-speech API (no key needed)
+                text = r.recognize_google(audio_data)
+                
+            logger.info(f"✅ Google Transcription: {text}")
             
-            import tempfile
-            import os
-            import gc  # Import Garbage Collector
-            
-            # Save audio to temp file
-            with tempfile.NamedTemporaryFile(suffix='.opus', delete=False) as temp_audio:
-                temp_audio.write(content)
-                temp_audio_path = temp_audio.name
-            
-            model = None
-            try:
-                # 1. Use "tiny" instead of "base"
-                # 2. Ensure we use int8 quantization to save RAM
-                # 3. restrict threads to prevent CPU spikes that look like memory leaks
-                logger.info("   Loading Whisper model (tiny)...")
-                model = WhisperModel("tiny", device="cpu", compute_type="int8", cpu_threads=2)
-                
-                logger.info("   Transcribing audio...")
-                segments, info = model.transcribe(temp_audio_path, beam_size=5)
-                
-                transcript = " ".join([segment.text for segment in segments])
-                logger.info(f"✅ Audio transcribed: {transcript[:50]}...")
-                return transcript
-                
-            finally:
-                # CLEANUP FILES
-                if os.path.exists(temp_audio_path):
-                    os.unlink(temp_audio_path)
-                
-                # CRITICAL MEMORY CLEANUP
-                # We must delete the model and force garbage collection 
-                # to give RAM back to Selenium
-                if model:
-                    del model
-                gc.collect()
-                logger.info("🗑️ RAM cleaned up")
-                
+            # Cleanup
+            os.unlink(opus_path)
+            os.unlink(wav_path)
+            return text
+
         except Exception as e:
-            logger.error(f"❌ Error processing audio: {e}")
+            logger.error(f"❌ Google Speech failed: {e}")
             return "[Audio transcription failed]"
 
     async def solve_question(self, question_data: dict) -> any:
