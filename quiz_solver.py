@@ -17,6 +17,20 @@ import matplotlib.pyplot as plt
 from bs4 import BeautifulSoup, NavigableString, Tag
 from urllib.parse import urljoin
 
+try:
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service
+    from webdriver_manager.chrome import ChromeDriverManager
+    SELENIUM_AVAILABLE = True
+except ImportError:
+    SELENIUM_AVAILABLE = False
+    logging.warning("⚠️ Selenium not installed - JS-rendered pages may not work")
+
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -48,6 +62,66 @@ class QuizSolver:
             raise
         
         self.start_time = None
+        self.driver = None
+
+    def __del__(self):
+        if hasattr(self, 'driver') and self.driver:
+            try:
+                self.driver.quit()
+            except:
+                pass
+
+    def _init_selenium(self):
+        if not SELENIUM_AVAILABLE:
+            return False
+        
+        if hasattr(self, 'driver') and self.driver:
+            return True
+        
+        try:
+            options = Options()
+            options.add_argument('--headless')
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--disable-gpu')
+            
+            self.driver = webdriver.Chrome(
+                service=Service(ChromeDriverManager().install()),
+                options=options
+            )
+            logger.info("✅ Selenium WebDriver initialized")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Selenium: {e}")
+            return False
+
+    def _scrape_with_selenium(self, url: str) -> str:
+        if not self._init_selenium():
+            return None
+        
+        try:
+            logger.info(f"   🌐 Using Selenium to render: {url}")
+            self.driver.get(url)
+            
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+            
+            time.sleep(2)
+            
+            try:
+                question_elem = self.driver.find_element(By.ID, "question")
+                content = question_elem.text
+            except:
+                content = self.driver.find_element(By.TAG_NAME, "body").text
+            
+            logger.info(f"   ✅ Selenium rendered {len(content)} chars")
+            return content
+            
+        except Exception as e:
+            logger.error(f"   ❌ Selenium scraping failed: {e}")
+            return None
+
         
     async def solve_quiz_chain(self, initial_url: str):
         """
@@ -159,7 +233,6 @@ class QuizSolver:
         logger.info("="*80)
     
     async def fetch_quiz_page(self, url: str) -> dict:
-        """Fetch and parse quiz page using requests (no browser needed)"""
         try:
             logger.info(f"🌐 Fetching page with requests: {url}")
             
@@ -169,6 +242,7 @@ class QuizSolver:
             logger.info(f"✅ Page fetched: {response.status_code}")
             
             soup = BeautifulSoup(response.text, 'html.parser')
+            full_html = response.text
             
             result_div = soup.find(id='result')
             if result_div:
@@ -183,17 +257,35 @@ class QuizSolver:
             scripts = soup.find_all('script')
             for script in scripts:
                 if script.string and 'atob' in script.string:
-                    logger.info("🔓 Found base64 encoded content, decoding...")
-                    import base64
-                    match = re.search(r'atob\(`([^`]+)`\)', script.string)
-                    if match:
-                        encoded = match.group(1)
-                        decoded = base64.b64decode(encoded).decode('utf-8')
-                        logger.info(f"✅ Decoded content: {decoded[:200]}...")
-                        question_text = decoded
-                        question_html = decoded
+                    logger.info("🔓 Found script with atob, extracting base64...")
+                    
+                    base64_candidates = re.findall(r'`([A-Za-z0-9+/=]{50,})`', script.string)
+                    
+                    for candidate in base64_candidates:
+                        try:
+                            decoded = base64.b64decode(candidate).decode('utf-8')
+                            logger.info(f"✅ Decoded {len(decoded)} chars")
+                            question_text = decoded
+                            question_html = decoded
+                            break
+                        except Exception:
+                            continue
             
-            submit_url = self._extract_submit_url(question_text, url)
+            if '<span id="cutoff"></span>' in full_html or 'emailNumber()' in full_html:
+                logger.info("🔍 Detected dynamic content, fetching with Selenium...")
+                if self._init_selenium():
+                    try:
+                        self.driver.get(url)
+                        time.sleep(3)  # Wait for JS to execute
+                        
+                        # Get the rendered page text
+                        rendered_body = self.driver.find_element(By.TAG_NAME, "body").text
+                        question_text += f"\n\nRendered page content:\n{rendered_body}"
+                        logger.info(f"✅ Added rendered content: {len(rendered_body)} chars")
+                    except Exception as e:
+                        logger.error(f"⚠️ Failed to render with Selenium: {e}")
+            
+            submit_url = self._extract_submit_url(question_html, url)
             file_urls = self._extract_file_urls(soup, url)
             
             if submit_url:
@@ -210,20 +302,35 @@ class QuizSolver:
                 'question': question_text,
                 'submit_url': submit_url,
                 'file_urls': file_urls,
-                'html': question_html
+                'html': question_html,
+                'url': url
             }
             
         except Exception as e:
             logger.error(f"❌ Error fetching page: {e}")
             logger.exception("Full traceback:")
             return None
+
     
     def _extract_submit_url(self, html: str, base_url: str) -> str:
-        
-        logger.info(f"Extracting submit URL from base URL: {base_url}")
-        logger.info(f"HTML snippet (first 500 chars): {html[:500]}")
-
         soup = BeautifulSoup(html, "html.parser")
+        
+        logger.debug(f"Searching for submit URL in {len(html)} chars of HTML")
+        logger.debug(f"Base URL: {base_url}")
+        
+        links_found = soup.find_all('a', href=True)
+        logger.debug(f"Found {len(links_found)} total links")
+        
+        for link in links_found:
+            href = link['href']
+            logger.debug(f"Checking link: {href}")
+            if 'submit' in href.lower():
+                if href.startswith('http'):
+                    submit_url = href
+                else:
+                    submit_url = urljoin(base_url, href)
+                logger.info(f"✅ Found submit URL in hyperlink: {submit_url}")
+                return submit_url
         
         all_text = soup.get_text(separator=' ')
         
@@ -238,10 +345,10 @@ class QuizSolver:
                 url = matches[0].strip().rstrip('/')
                 if not url.endswith('/submit'):
                     url += '/submit'
-                logger.info(f"✅ Found absolute submit URL: {url}")
+                logger.info(f"✅ Found absolute submit URL in text: {url}")
                 return url
         
-        for elem in soup.find_all(string=re.compile(r'POST\s+.*?\s+to', re.I)):
+        for elem in soup.find_all(string=re.compile(r'POST\s+.*?\s+back\s+to', re.I)):
             parent = elem.parent
             all_siblings = [elem]
             sib = elem.next_sibling
@@ -262,36 +369,6 @@ class QuizSolver:
                     logger.info(f"✅ Assembled submit URL from siblings: {url}")
                     return url
         
-        origin_span = soup.find("span", class_="origin")
-        if origin_span:
-            domain_text = origin_span.get_text().strip().rstrip('/')
-            sib = origin_span.next_sibling
-            while sib:
-                txt = str(sib) if isinstance(sib, NavigableString) else sib.get_text()
-                if '/submit' in txt:
-                    url = domain_text + '/submit'
-                    logger.info(f"✅ Assembled URL from span.origin: {url}")
-                    return url
-                sib = sib.next_sibling
-        
-        scripts = soup.find_all('script')
-        for script in scripts:
-            if script.string:
-                script_text = script.string
-                m = re.search(r'\.origin\s*=\s*["\']?([^"\';\s]+)', script_text)
-                if m:
-                    origin = m.group(1).rstrip('/')
-                    if '/submit' in script_text or '/submit' in all_text:
-                        url = origin + '/submit'
-                        logger.info(f"✅ Extracted origin from script, assembled: {url}")
-                        return url
-                
-                m2 = re.search(r'(https?://[^\s"\'<>]+/submit)', script_text)
-                if m2:
-                    url = m2.group(1)
-                    logger.info(f"✅ Found submit URL in script: {url}")
-                    return url
-        
         if '/submit' in all_text and base_url and base_url.startswith('http'):
             url = urljoin(base_url, '/submit')
             logger.info(f"✅ Fallback: joined /submit with base URL: {url}")
@@ -304,7 +381,7 @@ class QuizSolver:
     def _extract_file_urls(self, soup: BeautifulSoup, base_url: str) -> list:
         """Extract downloadable file URLs"""
         file_urls = []
-        extensions = ['.pdf', '.csv', '.xlsx', '.json', '.txt', '.png', '.jpg', '.jpeg']
+        extensions = ['.pdf', '.csv', '.xlsx', '.json', '.txt', '.png', '.jpg', '.jpeg', '.opus', '.mp3', '.wav', '.m4a']
         
         for link in soup.find_all('a', href=True):
             href = link['href']
@@ -317,23 +394,128 @@ class QuizSolver:
             if any(ext in url.lower() for ext in extensions):
                 file_urls.append(url)
         
+        for audio in soup.find_all('audio', src=True):
+            src = audio['src']
+            if src.startswith('http'):
+                url = src
+            else:
+                url = urljoin(base_url, src)
+            file_urls.append(url)
+        
         logger.debug(f"📎 Extracted {len(file_urls)} file URL(s)")
         return file_urls
     
+    def _process_audio(self, content: bytes) -> str:
+        try:
+            logger.info("🎵 Processing audio file with local Whisper...")
+            
+            try:
+                from faster_whisper import WhisperModel
+            except ImportError:
+                logger.error("❌ faster-whisper not installed")
+                return "[Audio transcription unavailable - install faster-whisper]"
+            
+            import tempfile
+            import os
+            
+            # Save audio to temp file
+            with tempfile.NamedTemporaryFile(suffix='.opus', delete=False) as temp_audio:
+                temp_audio.write(content)
+                temp_audio_path = temp_audio.name
+            
+            try:
+                # Initialize model (downloads on first use, cached after)
+                logger.info("   Loading Whisper model (base)...")
+                model = WhisperModel("base", device="cpu", compute_type="int8")
+                
+                # Transcribe
+                logger.info("   Transcribing audio...")
+                segments, info = model.transcribe(temp_audio_path, beam_size=5)
+                
+                # Combine all segments
+                transcript = " ".join([segment.text for segment in segments])
+                
+                logger.info(f"✅ Audio transcribed: {transcript}")
+                return transcript
+                
+            finally:
+                os.unlink(temp_audio_path)
+                
+        except Exception as e:
+            logger.error(f"❌ Error processing audio: {e}")
+            logger.exception("Full audio error:")
+            return "[Audio transcription failed]"
+
     async def solve_question(self, question_data: dict) -> any:
-        """Use LLM to solve the question"""
         question = question_data['question']
         file_urls = question_data.get('file_urls', [])
+        current_url = question_data.get('url', '')
         
         logger.info(f"🔍 Analyzing question ({len(question)} chars)")
+        
+        # AUTO-DETECT URLs to scrape from question
+        soup_question = BeautifulSoup(question, 'html.parser')
+        scrape_links = []
+        for link in soup_question.find_all('a', href=True):
+            href = link['href']
+            
+            # Skip submit URLs and file downloads
+            if 'submit' in href.lower():
+                logger.debug(f"   Skipping submit URL: {href}")
+                continue
+            
+            if any(ext in href.lower() for ext in ['.pdf', '.csv', '.xlsx', '.json', '.txt', '.png', '.jpg', '.jpeg']):
+                logger.debug(f"   Skipping file URL: {href}")
+                continue
+            
+            # Build full URL
+            if href.startswith('http'):
+                full_url = href
+            else:
+                full_url = urljoin(current_url, href)
+            
+            # Replace $EMAIL placeholder with actual email
+            full_url = full_url.replace('$EMAIL', self.email)
+            
+            scrape_links.append(full_url)
+            logger.debug(f"   Will scrape: {full_url}")
+
+        if scrape_links:
+            logger.info(f"🔗 Found {len(scrape_links)} URL(s) to scrape from question")
+            for scrape_url in scrape_links:
+                try:
+                    logger.info(f"   🌐 Scraping: {scrape_url}")
+                    scrape_response = requests.get(scrape_url, timeout=30)
+                    
+                    scrape_soup = BeautifulSoup(scrape_response.text, 'html.parser')
+                    scrape_text = scrape_soup.get_text(separator=' ', strip=True)
+                    
+                    if len(scrape_text) < 20:
+                        logger.warning(f"   ⚠️  Content too short, trying Selenium...")
+                        selenium_content = self._scrape_with_selenium(scrape_url)
+                        if selenium_content and len(selenium_content) > 20:
+                            scrape_text = selenium_content
+
+                    file_urls.append(('scraped_page', scrape_text))
+                    logger.info(f"   ✅ Scraped {len(scrape_text)} chars")
+                except Exception as e:
+                    logger.error(f"   ❌ Failed to scrape {scrape_url}: {e}")
+
         
         # Download and process files
         processed_data = {}
         if file_urls:
             logger.info(f"📥 Downloading and processing {len(file_urls)} file(s)...")
             
-        for idx, url in enumerate(file_urls, 1):
+        for idx, item in enumerate(file_urls, 1):
             try:
+                if isinstance(item, tuple):
+                    url, content_text = item
+                    processed_data[url] = content_text
+                    logger.info(f"   ✅ Added scraped content: {len(content_text)} chars")
+                    continue
+                    
+                url = item
                 logger.info(f"   📥 [{idx}/{len(file_urls)}] Downloading: {url}")
                 content = await self._download_file(url)
                 logger.info(f"   ✅ Downloaded {len(content)} bytes")
@@ -350,6 +532,9 @@ class QuizSolver:
                 elif any(ext in url.lower() for ext in ['.png', '.jpg', '.jpeg']):
                     logger.info(f"   🖼️  Processing as Image...")
                     processed_data[url] = self._process_image(content)
+                elif any(ext in url.lower() for ext in ['.opus', '.mp3', '.wav', '.m4a']):  # ADD THIS
+                    logger.info(f"   🎵 Processing as Audio...")
+                    processed_data[url] = self._process_audio(content)
                 else:
                     logger.info(f"   📝 Processing as text...")
                     processed_data[url] = content.decode('utf-8', errors='ignore')
@@ -359,54 +544,83 @@ class QuizSolver:
             except Exception as e:
                 logger.error(f"   ❌ Error processing {url}: {e}")
         
-        # Build context for LLM
+        # Build context
         context = f"Question: {question}\n\n"
         
         if processed_data:
-            context += "Data from files:\n"
+            context += "Data provided:\n"
             for url, data in processed_data.items():
-                context += f"\nFile: {url}\n"
-                data_str = str(data)
-                context += data_str[:3000] + ("..." if len(data_str) > 3000 else "")
+                context += f"\n=== Source: {url} ===\n"
+                context += str(data)
                 context += "\n"
         
         prompt = f"""{context}
 
-INSTRUCTIONS:
-You are solving a quiz that will submit the following JSON:
-{{
-  "email": "{self.email}",
-  "secret": "{self.secret}",
-  "url": "{question_data.get('url','URL')}",
-  "answer": (YOUR ANSWER GOES HERE)
-}}
+        CRITICAL INSTRUCTIONS:
+        1. Analyze the question and ALL data provided above
+        2. If you see links to scrape, the content has already been fetched for you
+        3. If data contains numbers to calculate (sum, mean, count, etc.), perform the calculation
+        4. Return ONLY the final answer VALUE - NOT a JSON object
 
-YOUR TASK:
-Return ONLY the value for the "answer" key. The "answer" may need to be a boolean, number, string, base64 URI of a file attachment, or a JSON object with a combination of these.
-- If the answer should be a number, output just the number (e.g., 42, 3.14)
-- If the answer should be a string, output just the string, no quotes
-- If the answer should be true or false, output true or false
-- If the answer should be an object (explicitly requested), return a valid JSON object
+        EXAMPLES:
+        - Question asks for a sum → Return: 12345 (just the number)
+        - Question asks for text → Return: the resultant text (just the text, no quotes)
+        - Question asks for true/false → Return: true (or false)
+        - Question explicitly asks for JSON array → Return: [{{"x":1}}] (only if explicitly requested)
 
-Just output the value to use for "answer", and NOTHING ELSE.
+        DO NOT return:
+        - {{"answer": 12345}} ❌
+        - "the answer is 12345" ❌
+        - Any explanations ❌
 
-Answer:
-"""
+        The quiz server expects this format:
+        {{
+        "email": "{self.email}",
+        "secret": "{self.secret}",
+        "url": "quiz_url",
+        "answer": YOUR_VALUE_HERE
+        }}
+
+        I will put your response directly into the "answer" field.
+
+        Answer (just the value):
+        """
+
+        logger.info(f"📏 Prompt length: {len(prompt)} chars")
+        logger.info(f"Full prompt:\n{prompt}")
 
         try:
             logger.info("🤖 Calling LLM (gpt-5-mini)...")
-            logger.debug(f"   Context length: {len(prompt)} chars")
             
             response = self.client.chat.completions.create(
                 model="gpt-5-mini",
                 messages=[
-                    {"role": "system", "content": "You are a precise data analyst. Return only the answer, no explanations."},
+                    {"role": "system", "content": "You are a precise data analyst. Analyze all data thoroughly and return only the answer."},
                     {"role": "user", "content": prompt}
                 ],
                 max_completion_tokens=1000
             )
             
             answer_text = response.choices[0].message.content.strip()
+
+            if not answer_text or answer_text == "":
+                logger.error("❌ LLM returned EMPTY response!")
+                logger.error(f"   Finish reason: {response.choices[0].finish_reason}")
+                
+                if response.choices[0].finish_reason == 'length':
+                    logger.warning("⚠️ Hit token limit, retrying with increased limit...")
+                    response = self.client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "user", "content": prompt}
+                        ],
+                        max_completion_tokens=1000  
+                    )
+                    answer_text = response.choices[0].message.content.strip()
+                
+                if not answer_text:
+                    return None
+            
             logger.info(f"✅ LLM response received: {answer_text[:100]}")
             
             answer = self._parse_answer(answer_text, question, processed_data)
@@ -418,6 +632,7 @@ Answer:
             logger.error(f"❌ Error calling LLM: {e}")
             logger.exception("Full traceback:")
             return "Error"
+
     
     async def _download_file(self, url: str) -> bytes:
         """Download file from URL"""
@@ -464,14 +679,34 @@ Answer:
     def _process_csv(self, content: bytes) -> str:
         """Process CSV file"""
         try:
+            # Try reading with header first
             df = pd.read_csv(BytesIO(content))
-            logger.info(f"✅ CSV processed: {df.shape[0]} rows, {df.shape[1]} columns")
+            
+            # Check if first row looks like data (all numeric) rather than headers
+            first_row_numeric = all(str(col).replace('.','').replace('-','').isdigit() for col in df.columns)
+            
+            if first_row_numeric:
+                # Re-read without header
+                df = pd.read_csv(BytesIO(content), header=None)
+                logger.info(f"✅ CSV processed (no header): {df.shape[0]} rows, {df.shape[1]} columns")
+            else:
+                logger.info(f"✅ CSV processed: {df.shape[0]} rows, {df.shape[1]} columns")
+            
             logger.debug(f"   Columns: {list(df.columns)}")
-            return f"Shape: {df.shape}\n\n{df.to_string()}"
+            
+            # Build output with each column as a list
+            output = f"CSV Format (Shape: {df.shape}):\n"
+            
+            for col in df.columns:
+                values = df[col].tolist()
+                output += f"Column_{col}: {values}\n"
+            
+            return output
+            
         except Exception as e:
             logger.error(f"❌ Error processing CSV: {e}")
             return f"Error processing CSV: {e}"
-    
+
     def _process_image(self, content: bytes) -> str:
         """Process image using vision model"""
         try:
@@ -575,4 +810,3 @@ Answer:
             logger.error(f"❌ Error submitting answer: {e}")
             logger.exception("Full traceback:")
             return None
-
