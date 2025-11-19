@@ -44,6 +44,7 @@ class QuizSolver:
         """Initialize QuizSolver with credentials"""
         self.email = email
         self.secret = secret
+        self.dataframes = {}
         
         logger.info(f"🔧 Initializing QuizSolver for {email[:10]}...")
         
@@ -164,7 +165,6 @@ class QuizSolver:
             logger.info("-"*80)
             
             try:
-                # Fetch quiz page
                 logger.info("🌐 Fetching quiz page...")
                 question_data = await self.fetch_quiz_page(current_url)
                 
@@ -176,12 +176,10 @@ class QuizSolver:
                 logger.info(f"❓ Question: {question_data['question'][:150]}...")
                 logger.info(f"📎 Files found: {len(question_data.get('file_urls', []))}")
                 
-                # Solve the question
                 logger.info("🤖 Solving question with LLM...")
                 answer = await self.solve_question(question_data)
                 logger.info(f"💡 Answer generated: {str(answer)[:100]}")
                 
-                # Submit answer
                 logger.info("📤 Submitting answer...")
                 result = await self.submit_answer(
                     question_data['submit_url'],
@@ -195,7 +193,6 @@ class QuizSolver:
                 
                 questions_solved += 1
                 
-                # Check result
                 if result.get('correct'):
                     questions_correct += 1
                     logger.info("✅ ✅ ✅ ANSWER CORRECT! ✅ ✅ ✅")
@@ -226,7 +223,6 @@ class QuizSolver:
                 logger.exception("Full traceback:")
                 break
         
-        # Final summary
         total_time = time.time() - self.start_time
         logger.info("")
         logger.info("="*80)
@@ -285,9 +281,8 @@ class QuizSolver:
                 if self._init_selenium():
                     try:
                         self.driver.get(url)
-                        time.sleep(3)  # Wait for JS to execute
+                        time.sleep(3)
                         
-                        # Get the rendered page text
                         rendered_body = self.driver.find_element(By.TAG_NAME, "body").text
                         question_text += f"\n\nRendered page content:\n{rendered_body}"
                         logger.info(f"✅ Added rendered content: {len(rendered_body)} chars")
@@ -423,25 +418,20 @@ class QuizSolver:
         try:
             logger.info("🎵 Using Google Web Speech (Cloud)...")
             
-            # 1. Write original content (likely opus/mp3) to file
             with tempfile.NamedTemporaryFile(suffix='.opus', delete=False) as temp_opus:
                 temp_opus.write(content)
                 opus_path = temp_opus.name
 
-            # 2. Convert to WAV (Required by SpeechRecognition) using ffmpeg (installed in Docker)
             wav_path = opus_path + ".wav"
             os.system(f"ffmpeg -i {opus_path} -ar 16000 -ac 1 {wav_path} -y -hide_banner -loglevel error")
 
-            # 3. Send to Google
             r = sr.Recognizer()
             with sr.AudioFile(wav_path) as source:
                 audio_data = r.record(source)
-                # This uses Google's free text-to-speech API (no key needed)
                 text = r.recognize_google(audio_data)
                 
             logger.info(f"✅ Google Transcription: {text}")
             
-            # Cleanup
             os.unlink(opus_path)
             os.unlink(wav_path)
             return text
@@ -457,13 +447,11 @@ class QuizSolver:
         
         logger.info(f"🔍 Analyzing question ({len(question)} chars)")
         
-        # AUTO-DETECT URLs to scrape from question
         soup_question = BeautifulSoup(question, 'html.parser')
         scrape_links = []
         for link in soup_question.find_all('a', href=True):
             href = link['href']
             
-            # Skip submit URLs and file downloads
             if 'submit' in href.lower():
                 logger.debug(f"   Skipping submit URL: {href}")
                 continue
@@ -472,13 +460,11 @@ class QuizSolver:
                 logger.debug(f"   Skipping file URL: {href}")
                 continue
             
-            # Build full URL
             if href.startswith('http'):
                 full_url = href
             else:
                 full_url = urljoin(current_url, href)
             
-            # Replace $EMAIL placeholder with actual email
             full_url = full_url.replace('$EMAIL', self.email)
             
             scrape_links.append(full_url)
@@ -506,7 +492,6 @@ class QuizSolver:
                     logger.error(f"   ❌ Failed to scrape {scrape_url}: {e}")
 
         
-        # Download and process files
         processed_data = {}
         if file_urls:
             logger.info(f"📥 Downloading and processing {len(file_urls)} file(s)...")
@@ -536,7 +521,7 @@ class QuizSolver:
                 elif any(ext in url.lower() for ext in ['.png', '.jpg', '.jpeg']):
                     logger.info(f"   🖼️  Processing as Image...")
                     processed_data[url] = self._process_image(content)
-                elif any(ext in url.lower() for ext in ['.opus', '.mp3', '.wav', '.m4a']):  # ADD THIS
+                elif any(ext in url.lower() for ext in ['.opus', '.mp3', '.wav', '.m4a']):  
                     logger.info(f"   🎵 Processing as Audio...")
                     processed_data[url] = self._process_audio(content)
                 else:
@@ -548,85 +533,109 @@ class QuizSolver:
             except Exception as e:
                 logger.error(f"   ❌ Error processing {url}: {e}")
         
-        # Build context
-        context = f"Question: {question}\n\n"
-        
+        context = f"Question: {question}\n\nData provided:\n"
         if processed_data:
-            context += "Data provided:\n"
             for url, data in processed_data.items():
-                context += f"\n=== Source: {url} ===\n"
-                context += str(data)
-                context += "\n"
+                context += f"\n=== Source: {url} ===\n{str(data)}\n"
+
+        if self.dataframes:
+            logger.info("🧮 Dataframe detected - Using CODE EXECUTION mode")
+            prompt = f"""{context}
+            
+            CRITICAL INSTRUCTIONS:
+            1. A Pandas DataFrame is stored in the variable `df`.
+            2. The question requires analyzing this data (sum, mean, filter, etc.).
+            3. Do NOT calculate it yourself.
+            4. Write a SINGLE line of Python code to calculate the answer.
+            
+            Examples:
+            - "Sum of column A" -> `df['A'].sum()`
+            - "Count rows where B > 5" -> `len(df[df['B'] > 5])`
+            - "Value in row 0, col 1" -> `df.iloc[0, 1]`
+            
+            Return ONLY the python code wrapped in backticks.
+            """
         
-        prompt = f"""{context}
+        else:
+            logger.info("🧠 No Dataframe - Using STANDARD LLM mode")
+            prompt = f"""{context}
 
-        CRITICAL INSTRUCTIONS:
-        1. Analyze the question and ALL data provided above
-        2. If you see links to scrape, the content has already been fetched for you
-        3. If data contains numbers to calculate (sum, mean, count, etc.), perform the calculation
-        4. Return ONLY the final answer VALUE - NOT a JSON object
+            CRITICAL INSTRUCTIONS:
+            1. Analyze the question and ALL data provided above
+            2. If you see links to scrape, the content has already been fetched for you
+            3. If data contains numbers to calculate (sum, mean, count, etc.), perform the calculation
+            4. Return ONLY the final answer VALUE - NOT a JSON object
 
-        EXAMPLES:
-        - Question asks for a sum → Return: 12345 (just the number)
-        - Question asks for text → Return: the resultant text (just the text, no quotes)
-        - Question asks for true/false → Return: true (or false)
-        - Question explicitly asks for JSON array → Return: [{{"x":1}}] (only if explicitly requested)
+            EXAMPLES:
+            - Question asks for a sum → Return: 12345 (just the number)
+            - Question asks for text → Return: the resultant text (just the text, no quotes)
+            - Question asks for true/false → Return: true (or false)
+            - Question explicitly asks for JSON array → Return: [{{"x":1}}] (only if explicitly requested)
 
-        DO NOT return:
-        - {{"answer": 12345}} ❌
-        - "the answer is 12345" ❌
-        - Any explanations ❌
+            DO NOT return:
+            - {{"answer": 12345}} ❌
+            - "the answer is 12345" ❌
+            - Any explanations ❌
 
-        The quiz server expects this format:
-        {{
-        "email": "{self.email}",
-        "secret": "{self.secret}",
-        "url": "quiz_url",
-        "answer": YOUR_VALUE_HERE
-        }}
+            The quiz server expects this format:
+            {{
+            "email": "{self.email}",
+            "secret": "{self.secret}",
+            "url": "quiz_url",
+            "answer": YOUR_VALUE_HERE
+            }}
 
-        I will put your response directly into the "answer" field.
+            I will put your response directly into the "answer" field.
 
-        Answer (just the value):
-        """
-
-        logger.info(f"📏 Prompt length: {len(prompt)} chars")
+            Answer (just the value):
+            """
         logger.info(f"Full prompt:\n{prompt}")
 
         try:
             logger.info("🤖 Calling LLM (gpt-5-mini)...")
             
             response = self.client.chat.completions.create(
-                model="gpt-5-mini",
+                model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "You are a precise data analyst. Analyze all data thoroughly and return only the answer."},
+                    {"role": "system", "content": "You are a precise data analyst."},
                     {"role": "user", "content": prompt}
                 ],
                 max_completion_tokens=1000
             )
             
             answer_text = response.choices[0].message.content.strip()
+            
+            
+            if self.dataframes and ('df' in answer_text or '`' in answer_text):
+                try:
+                    logger.info("💻 Analyzing LLM code response...")
+                    
+                    code_match = re.search(r'```(?:python)?\s*(.*?)```', answer_text, re.DOTALL)
+                    
+                    if code_match:
+                        code_to_run = code_match.group(1).strip()
+                    else:
+                        code_match = re.search(r'`(.*?)`', answer_text, re.DOTALL)
+                        if code_match:
+                            code_to_run = code_match.group(1).strip()
+                        else:
+                            code_to_run = answer_text.strip()
 
-            if not answer_text or answer_text == "":
-                logger.error("❌ LLM returned EMPTY response!")
-                logger.error(f"   Finish reason: {response.choices[0].finish_reason}")
-                
-                if response.choices[0].finish_reason == 'length':
-                    logger.warning("⚠️ Hit token limit, retrying with increased limit...")
-                    response = self.client.chat.completions.create(
-                        model="gpt-4o-mini",
-                        messages=[
-                            {"role": "user", "content": prompt}
-                        ],
-                        max_completion_tokens=1000  
-                    )
-                    answer_text = response.choices[0].message.content.strip()
-                
-                if not answer_text:
-                    return None
+                    logger.info(f"💻 Executing clean code: {code_to_run}")
+                    
+                    local_vars = {'df': self.dataframes['df'], 'pd': pd}
+                    result = eval(code_to_run, {}, local_vars)
+                    
+                    if hasattr(result, 'item'): 
+                        result = result.item()
+                    
+                    logger.info(f"✅ Computed result: {result}")
+                    return result
+                    
+                except Exception as e:
+                    logger.error(f"❌ Execution failed: {e}")
             
             logger.info(f"✅ LLM response received: {answer_text[:100]}")
-            
             answer = self._parse_answer(answer_text, question, processed_data)
             logger.info(f"✅ Answer parsed as type: {type(answer).__name__}")
             
@@ -681,34 +690,27 @@ class QuizSolver:
         return "\n".join(result)
     
     def _process_csv(self, content: bytes) -> str:
-        """Process CSV file"""
         try:
-            # Try reading with header first
+            self.dataframes = {}
+            
             df = pd.read_csv(BytesIO(content))
             
-            # Check if first row looks like data (all numeric) rather than headers
             first_row_numeric = all(str(col).replace('.','').replace('-','').isdigit() for col in df.columns)
-            
             if first_row_numeric:
-                # Re-read without header
                 df = pd.read_csv(BytesIO(content), header=None)
-                logger.info(f"✅ CSV processed (no header): {df.shape[0]} rows, {df.shape[1]} columns")
-            else:
-                logger.info(f"✅ CSV processed: {df.shape[0]} rows, {df.shape[1]} columns")
             
-            logger.debug(f"   Columns: {list(df.columns)}")
+            df.columns = [str(col).strip() for col in df.columns]
             
-            # Build output with each column as a list
-            output = f"CSV Format (Shape: {df.shape}):\n"
+            self.dataframes['df'] = df
             
-            for col in df.columns:
-                values = df[col].tolist()
-                output += f"Column_{col}: {values}\n"
+            summary = f"DataFrame 'df' Loaded.\nShape: {df.shape}\nColumns: {list(df.columns)}\n"
+            summary += f"First 5 rows:\n{df.head().to_string()}"
             
-            return output
+            logger.info(f"✅ CSV loaded into variable 'df': {df.shape}")
+            return summary
             
         except Exception as e:
-            logger.error(f"❌ Error processing CSV: {e}")
+            logger.error(f"❌ CSV Error: {e}")
             return f"Error processing CSV: {e}"
 
     def _process_image(self, content: bytes) -> str:
@@ -748,7 +750,6 @@ class QuizSolver:
         """Parse LLM answer into correct format"""
         logger.debug(f"🔍 Parsing answer: {answer_text[:50]}...")
         
-        # Try JSON
         try:
             parsed = json.loads(answer_text)
             logger.debug("   ✅ Parsed as JSON")
@@ -756,7 +757,6 @@ class QuizSolver:
         except:
             pass
         
-        # Try number
         try:
             if '.' in answer_text:
                 parsed = float(answer_text)
@@ -768,7 +768,6 @@ class QuizSolver:
         except:
             pass
         
-        # Try boolean
         if answer_text.lower() in ['true', 'yes']:
             logger.debug("   ✅ Parsed as boolean: True")
             return True
@@ -776,7 +775,6 @@ class QuizSolver:
             logger.debug("   ✅ Parsed as boolean: False")
             return False
         
-        # Return as string
         logger.debug("   ✅ Returned as string")
         return answer_text
     
