@@ -585,6 +585,8 @@ class QuizSolver:
             "answer": YOUR_VALUE_HERE
             }}
 
+            use the "email" parameter from the above json IF you are asked for "your email".
+
             I will put your response directly into the "answer" field.
 
             Answer (just the value):
@@ -812,3 +814,4 @@ class QuizSolver:
             logger.error(f"❌ Error submitting answer: {e}")
             logger.exception("Full traceback:")
             return None
+
